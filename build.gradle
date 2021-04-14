@@ -4,6 +4,7 @@ buildscript {
     repositories {
         google()
         jcenter()
+        //maven { url 'https://dl.bintray.com/tuyasmartai/sdk' }
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:3.5.1'
@@ -15,7 +16,9 @@ buildscript {
 
 allprojects {
     repositories {
-        maven {url 'https://dl.bintray.com/tuyainc/TuyaSmartHome/'}
+        //maven {url 'https://dl.bintray.com/tuyainc/TuyaSmartHome/'}
+        jcenter()
+        maven { url 'https://dl.bintray.com/tuyasmartai/sdk' }
         google()
         jcenter()
         maven { url 'https://maven-other.tuya.com/repository/maven-releases/'}
