@@ -313,10 +313,28 @@ public class MainActivity extends AppCompatActivity {
                 return new DPConst.DPResult(true, DPConst.Type.PROP_BOOL);
             }
 
-            Log.d(TAG, "ccc cid: " + cid + " dpid: " + dpid);
+            Log.d(TAG, "ccc cid: " + cid + " dpid: " + dpid + " v: " + v.toString());
 
             if (dpid == 1) {
                 return new DPConst.DPResult(v, DPConst.Type.PROP_BOOL);
+            }
+
+            if (dpid == 150) {
+                IMediaTransManager transManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.MEDIA_TRANS_SERVICE);
+                if (v != null && v.toString() == "true")
+                    transManager.startLocalStorage();
+                else if (v != null && v.toString() == "false")
+                    transManager.stopLocalStorage();
+                return new DPConst.DPResult(v, DPConst.Type.PROP_BOOL);
+            }
+
+            if (dpid == 151) {
+                IMediaTransManager transManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.MEDIA_TRANS_SERVICE);
+                if (v != null && v.toString() == "1")
+                    transManager.autoLocalStorage(true);
+                else if (v != null && v.toString() == "0")
+                    transManager.startLocalStorage();
+                return new DPConst.DPResult(v, DPConst.Type.PROP_ENUM);
             }
 
             return null;
