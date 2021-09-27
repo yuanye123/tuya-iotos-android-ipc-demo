@@ -28,21 +28,26 @@ import com.tuya.smart.aiipc.ipc_sdk.api.IMediaTransManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.IMqttProcessManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.INetConfigManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.IParamConfigManager;
+import com.tuya.smart.aiipc.ipc_sdk.callback.IMqttStatusCallback;
 import com.tuya.smart.aiipc.ipc_sdk.callback.NetConfigCallback;
 import com.tuya.smart.aiipc.ipc_sdk.service.IPCServiceManager;
 import com.tuya.smart.aiipc.netconfig.ConfigProvider;
 import com.tuya.smart.aiipc.netconfig.mqtt.TuyaNetConfig;
+import com.tuya.smart.aiipc.trans.ServeInfo;
 import com.tuya.smart.aiipc.trans.TransJNIInterface;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Socket;
 import java.util.TimeZone;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final String TAG = "IPC_DEMO";
+    private static final String TAG = MainActivity.class.getSimpleName();
 
     SurfaceView surfaceView;
-
-    H264FileVideoCapture h264FileMainVideoCapture;
 
     VideoCapture videoCapture;
 
@@ -69,7 +74,6 @@ public class MainActivity extends AppCompatActivity {
         callBtn = findViewById(R.id.call);
         callBtn.setOnClickListener(v -> {
             if(isCallEnable){
-                Log.d("TAG","callBtn ++++++++++++");
                 IDeviceManager iDeviceManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.DEVICE_SERVICE);
                 // check register status
                 int regStat = iDeviceManager.getRegisterStatus();
@@ -170,51 +174,27 @@ public class MainActivity extends AppCompatActivity {
 
                 Log.d(TAG, "configOver111: token: " + token);
 
-                mqttProcessManager.setMqttStatusChangedCallback(status -> Log.w("onMqttStatus", status + ""));
+                mqttProcessManager.setMqttStatusChangedCallback(new IMqttStatusCallback() {
+                    @Override
+                    public void onMqttStatus(int i) {
+                        Log.d(TAG , "onMqttStatus status is " + i);
+                        if(i == 7){
+                            featureManager.initDoorBellFeatureEnv();
+                            // video stream from camera
+                            videoCapture = new VideoCapture(Common.ChannelIndex.E_CHANNEL_VIDEO_MAIN);
+                            videoCapture.startVideoCapture();
 
-                IDeviceManager iDeviceManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.DEVICE_SERVICE);
-                // set region
-                iDeviceManager.setRegion(IDeviceManager.IPCRegion.REGION_CN);
+                            // audio stream from local file
+                            fileAudioCapture = new FileAudioCapture(MainActivity.this);
+                            fileAudioCapture.startFileCapture();
 
-                new Thread(() -> {
+                            //  start push media
+                            transManager.startMultiMediaTrans(5);
 
-                    int ret ;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        ret = transManager.initTransSDK(token, "/data/data/com.tuya.ai.ipcsdkdemo/files/ipc/", "/data/data/com.tuya.ai.ipcsdkdemo/files/ipc/", pid, uuid, authkey);
-                    }else {
-                        ret = transManager.initTransSDK(token, "/sdcard/ipc/", "/sdcard/ipc/", pid, uuid, authkey);
+//                            keepHeartToWakeup();
+                        }
                     }
-
-                    Log.d(TAG, "initTransSDK ret is " + ret);
-                    featureManager.initDoorBellFeatureEnv();
-
-                    Log.d(TAG, "initTransSDK111 ret is " + ret);
-
-                    if(!isCallEnable){
-                        isCallEnable = true;
-                        runOnUiThread(() -> callBtn.setEnabled(true));
-                    }
-
-                    Log.d(TAG, "initTransSDK222 ret is " + ret);
-
-
-                    // video stream from camera
-                    videoCapture = new VideoCapture(Common.ChannelIndex.E_CHANNEL_VIDEO_MAIN);
-                    videoCapture.startVideoCapture();
-
-                    // audio stream from local file
-                    fileAudioCapture = new FileAudioCapture(MainActivity.this);
-                    fileAudioCapture.startFileCapture();
-
-                    //  start push media
-                    transManager.startMultiMediaTrans(5);
-
-                    Log.d(TAG, "initTransSDK333 ret is " + ret);
-                }).start();
-
-//                h264FileMainVideoCapture = new H264FileVideoCapture(MainActivity.this, "test.h264");
-//                h264FileMainVideoCapture.startVideoCapture(Common.ChannelIndex.E_CHANNEL_VIDEO_MAIN);
-
+                });
 
                 mediaTransManager.setDoorBellCallStatusCallback(status -> {
 
@@ -222,10 +202,23 @@ public class MainActivity extends AppCompatActivity {
 
                 });
 
-//                mediaTransManager.addAudioTalkCallback(bytes -> {
-//                    Log.d(TAG, "audio callback: " + bytes.length);
-//                });
+                IDeviceManager iDeviceManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.DEVICE_SERVICE);
+                // set region
+                iDeviceManager.setRegion(IDeviceManager.IPCRegion.REGION_CN);
 
+                int ret ;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ret = transManager.initTransSDK(token, "/data/data/com.tuya.ai.ipcsdkdemo/files/ipc/", "/data/data/com.tuya.ai.ipcsdkdemo/files/ipc/", pid, uuid, authkey);
+                }else {
+                    ret = transManager.initTransSDK(token, "/sdcard/ipc/", "/sdcard/ipc/", pid, uuid, authkey);
+                }
+
+                Log.d(TAG, "initTransSDK ret is " + ret);
+
+                if(!isCallEnable){
+                    isCallEnable = true;
+                    runOnUiThread(() -> callBtn.setEnabled(true));
+                }
                 syncTimeZone();
             }
 
@@ -303,6 +296,109 @@ public class MainActivity extends AppCompatActivity {
         String[] availableIDs = TimeZone.getAvailableIDs(rawOffset * 1000);
         if (availableIDs.length > 0) {
             android.util.Log.d(TAG, "syncTimeZone: " + rawOffset + " , " + availableIDs[0] + " ,  ");
+        }
+    }
+
+    //唤醒部分长连接可以参考以下部分
+    Socket socket = null;
+    private void keepHeartToWakeup() {
+        IMediaTransManager transManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.MEDIA_TRANS_SERVICE);
+        //获取当前的deviceId
+        String dip = transManager.getIpcDeviceId();
+        //获取当前的key
+        String key = transManager.getIpcLocalKey();
+        //获取云端的ip
+        ServeInfo serveInfo = transManager.getIpcLowPowerServerWithIpString();
+        Log.d(TAG, "keepHeartToWakeup getIpcDeviceId is " + dip + " transManager.getIpcLocalKey() is " + key + " serveInfo.ip is " + serveInfo.ip + " port is " + serveInfo.port);
+        try {
+            socket = new Socket(serveInfo.ip, Integer.parseInt(serveInfo.port));
+            socket.setSoTimeout(1000 * 10);
+        } catch (Exception e) {
+            e.printStackTrace();
+            Log.d(TAG, "create sockect is error is " + e.getMessage());
+        }
+
+        // 判断客户端和服务器是否连接成功
+        if (socket.isConnected()) {
+            Log.d(TAG, "sockect is connected");
+            try {
+                //发送鉴权信息给云端
+                OutputStream outputStream = socket.getOutputStream();
+                outputStream.write(transManager.authInit(dip, key));
+                outputStream.flush();
+
+                InputStream isr = socket.getInputStream();
+                byte[] data = new byte[512];
+                AtomicInteger len = new AtomicInteger(isr.read(data, 0, 512));
+                int ret;
+                if (len.get() > 0) {
+                    Log.d(TAG, "sockect authResult read len is " + len);
+                    //处理鉴权结果， ret > 0 鉴权成功
+                    ret = transManager.authResult(dip, key, data, len.get());
+                    if (ret > 0) {
+                        Log.d(TAG, "sockect authResult success!");
+                        //获取唤醒数据
+                        byte[] waupStr = transManager.getWakeUpMessage();
+                        //获取心跳数据
+                        byte[] heart = transManager.getHeartMessage();
+                        new Thread(() -> {
+                            while (true) {
+                                try {
+                                    //发送心跳
+                                    outputStream.write(heart);
+                                    outputStream.flush();
+
+                                    for (int i = 0; i < heart.length; i++) {
+                                        Log.d(TAG, "now heart data is " + heart[i]);
+                                    }
+                                } catch (Exception e) {
+                                    e.printStackTrace();
+                                    Log.d(TAG, "sockect send heart error is " + e.getMessage());
+                                }
+
+                                //接收服务端数据
+                                try {
+                                    len.set(isr.read(data, 0, 512));
+                                    Log.d(TAG, "sockect read heart len is " + len);
+                                } catch (IOException e) {
+                                    e.printStackTrace();
+                                    Log.d(TAG, "sockect thread read error is " + e.getMessage());
+                                    break;
+                                }
+
+                                if (len.get() > 0) {
+                                    int count = 0;
+                                    for (int i = 0; i < len.get(); i++) {
+                                        Log.d(TAG, "now wake up data is " + data[i] + " wak is "+ waupStr[i]);
+                                        if(data[i] == waupStr[i]){
+                                            count ++;
+                                        }
+                                    }
+
+                                    if(count == len.get()){
+                                        Log.d(TAG, "now wake up sdk !!!!");
+                                        break;
+                                    }
+                                }
+                                try {
+                                    Thread.sleep(1000 * 5);
+                                } catch (InterruptedException e) {
+                                    e.printStackTrace();
+                                }
+                            }
+                        }).start();
+                    } else {
+                        Log.d(TAG, "sockect authResult failed!");
+                    }
+                } else {
+                    Log.d(TAG, "sockect authResult read len is " + len);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                Log.d(TAG, "Exception error is " + e.getMessage());
+            }
+        } else {
+            Log.d(TAG, "sockect is not connected");
         }
     }
 }
