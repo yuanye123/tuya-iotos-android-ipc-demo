@@ -1,5 +1,7 @@
 package com.tuya.ai.ipcsdkdemo;
 
+import static com.tuya.smart.aiipc.ipc_sdk.callback.DPEvent.TUYA_DP_LIGHT;
+
 import android.Manifest;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
@@ -11,35 +13,39 @@ import android.os.Handler;
 import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import android.view.View;
 import android.widget.Button;
 
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.tuya.ai.ipcsdkdemo.audio.FileAudioCapture;
-import com.tuya.ai.ipcsdkdemo.video.H264FileVideoCapture;
 import com.tuya.ai.ipcsdkdemo.video.VideoCapture;
 import com.tuya.smart.aiipc.base.permission.PermissionUtil;
 import com.tuya.smart.aiipc.ipc_sdk.IPCSDK;
 import com.tuya.smart.aiipc.ipc_sdk.api.Common;
+import com.tuya.smart.aiipc.ipc_sdk.api.IControllerManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.IDeviceManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.IFeatureManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.IMediaTransManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.IMqttProcessManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.INetConfigManager;
 import com.tuya.smart.aiipc.ipc_sdk.api.IParamConfigManager;
+import com.tuya.smart.aiipc.ipc_sdk.callback.DPConst;
 import com.tuya.smart.aiipc.ipc_sdk.callback.IMqttStatusCallback;
 import com.tuya.smart.aiipc.ipc_sdk.callback.NetConfigCallback;
 import com.tuya.smart.aiipc.ipc_sdk.service.IPCServiceManager;
 import com.tuya.smart.aiipc.netconfig.ConfigProvider;
 import com.tuya.smart.aiipc.netconfig.mqtt.TuyaNetConfig;
+import com.tuya.smart.aiipc.trans.IPCLog;
 import com.tuya.smart.aiipc.trans.ServeInfo;
 import com.tuya.smart.aiipc.trans.TransJNIInterface;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.Socket;
+import java.net.UnknownHostException;
+import java.util.Locale;
 import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -54,8 +60,12 @@ public class MainActivity extends AppCompatActivity {
     FileAudioCapture fileAudioCapture;
 
     private Handler mHandler;
-    private boolean isCallEnable =false;
+    private boolean isCallEnable = false;
     Button callBtn;
+
+    String pid = BuildConfig.PID;
+    String uuid = BuildConfig.UUID;
+    String authkey = BuildConfig.AUTHOR_KEY;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -73,7 +83,7 @@ public class MainActivity extends AppCompatActivity {
 
         callBtn = findViewById(R.id.call);
         callBtn.setOnClickListener(v -> {
-            if(isCallEnable){
+            if (isCallEnable) {
                 IDeviceManager iDeviceManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.DEVICE_SERVICE);
                 // check register status
                 int regStat = iDeviceManager.getRegisterStatus();
@@ -122,15 +132,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initSurface() {
-        if(surfaceView.getHolder().getSurface().isValid()){
+        if (surfaceView.getHolder().getSurface().isValid()) {
             Log.d(TAG, "initSurface isValid");
             initSDK();
-        }else {
+            startConfig();
+        } else {
             surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
                 @Override
                 public void surfaceCreated(SurfaceHolder surfaceHolder) {
                     Log.d(TAG, "initSurface surfaceCreated");
                     initSDK();
+                    startConfig();
                 }
 
                 @Override
@@ -147,38 +159,109 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initSDK() {
-        IPCSDK.initSDK(this);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            IPCSDK.openWriteLog(this, "/data/data/com.tuya.ai.ipcsdkdemo/files/tuya_log/ipc", 3);
-        }else {
-            IPCSDK.openWriteLog(this, "/sdcard/tuya_log/ipc", 3);
-        }
-
+        IPCSDK.initSDK(MainActivity.this);
+        IPCSDK.openWriteLog(MainActivity.this, "/sdcard/tuya_log/ipc/", 3);
         LoadParamConfig();
+
+        //注册简单处理DP的接口
+        IControllerManager controllerManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.CONTROLLER_SERVICE);
+        controllerManager.setDpEventSimpleCallback((v, dpid, time_stamp) -> {
+            //处理dp
+            if (dpid == TUYA_DP_LIGHT) {
+                return new DPConst.DPResult(true, DPConst.Type.PROP_BOOL);
+            }
+            return null;
+        });
+
+        IPCServiceManager.getInstance().setResetHandler(isHardward -> restart());
+
+        //开始配网，目前支持蓝牙\二维码\MQTT
+        INetConfigManager iNetConfigManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.NET_CONFIG_SERVICE);
+        SurfaceView surfaceView = findViewById(R.id.surface);
+
+        iNetConfigManager.setPID(pid);
+        iNetConfigManager.setAuthorKey(authkey);
+        iNetConfigManager.setUserId(uuid);
+
+        iNetConfigManager.config(INetConfigManager.QR_OUTPUT, surfaceView.getHolder());
+
+        iNetConfigManager.config(INetConfigManager.QR_PARAMETERS, (INetConfigManager.OnParameterSetting) (p, camera) -> {
+            camera.setDisplayOrientation(90);
+        });
+
+        ConfigProvider.enableMQTT(false);
+        ConfigProvider.enableQR(true);
+
+        TuyaNetConfig.setDebug(true);
+
+    }
+
+    private void restart() {
+        Intent mStartActivity = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (mStartActivity != null) {
+            int mPendingIntentId = 123456;
+            PendingIntent mPendingIntent = PendingIntent.getActivity(MainActivity.this, mPendingIntentId
+                    , mStartActivity, PendingIntent.FLAG_CANCEL_CURRENT);
+            AlarmManager mgr = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+            mgr.set(AlarmManager.RTC, System.currentTimeMillis() + 100, mPendingIntent);
+            Runtime.getRuntime().exit(0);
+        }
+    }
+
+    private void startConfig() {
+        IPCServiceManager.getInstance().setDnsHandler(hostname -> {
+            String hostAddr = null;
+            try {
+                hostAddr = InetAddress.getByName(hostname).getHostAddress();
+            } catch (UnknownHostException e) {
+                e.printStackTrace();
+                Log.e(TAG, "DNSHandler: " + e.getMessage());
+            }
+
+            Log.e(TAG, "getIP: " + hostAddr);
+            return hostAddr;
+        });
 
         INetConfigManager iNetConfigManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.NET_CONFIG_SERVICE);
 
-        String pid = BuildConfig.PID;
-        String uuid = BuildConfig.UUID;
-        String authkey = BuildConfig.AUTHOR_KEY;
 
         NetConfigCallback netConfigCallback = new NetConfigCallback() {
 
+            /**
+             * 配网失败，建议提示用户重新操作
+             * @param type 配网类型 ConfigProvider.TYPE_XX
+             * @param msg 错误信息
+             */
+            @Override
+            public void onNetConnectFailed(int type, String msg) {
+                IPCLog.w(TAG, String.format(Locale.getDefault(), "onNetConnectFailed: %d %s", type, msg));
+            }
+
+            /**
+             * 配网准备阶段失败，建议重试
+             * @param type 配网类型 ConfigProvider.TYPE_XX
+             * @param msg 错误信息
+             */
+            @Override
+            public void onNetPrepareFailed(int type, String msg) {
+                IPCLog.w(TAG, "onNetPrepareFailed: " + type + " / " + msg);
+                iNetConfigManager.retry(type);
+            }
+
             @Override
             public void configOver(boolean first, String token) {
-                Log.d(TAG, "configOver: token: " + token);
+
+                IPCLog.w(TAG, "configOver: token " + token);
                 IMediaTransManager transManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.MEDIA_TRANS_SERVICE);
                 IMqttProcessManager mqttProcessManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.MQTT_SERVICE);
                 IMediaTransManager mediaTransManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.MEDIA_TRANS_SERVICE);
                 IFeatureManager featureManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.FEATURE_SERVICE);
 
-                Log.d(TAG, "configOver111: token: " + token);
-
                 mqttProcessManager.setMqttStatusChangedCallback(new IMqttStatusCallback() {
                     @Override
                     public void onMqttStatus(int i) {
-                        Log.d(TAG , "onMqttStatus status is " + i);
-                        if(i == 7){
+                        Log.d(TAG, "onMqttStatus status is " + i);
+                        if (i == Common.MqttConnectStatus.STATUS_CLOUD_CONN) {
                             featureManager.initDoorBellFeatureEnv();
                             // video stream from camera
                             videoCapture = new VideoCapture(Common.ChannelIndex.E_CHANNEL_VIDEO_MAIN);
@@ -206,16 +289,16 @@ public class MainActivity extends AppCompatActivity {
                 // set region
                 iDeviceManager.setRegion(IDeviceManager.IPCRegion.REGION_CN);
 
-                int ret ;
+                int ret;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ret = transManager.initTransSDK(token, "/data/data/com.tuya.ai.ipcsdkdemo/files/ipc/", "/data/data/com.tuya.ai.ipcsdkdemo/files/ipc/", pid, uuid, authkey);
-                }else {
+                } else {
                     ret = transManager.initTransSDK(token, "/sdcard/ipc/", "/sdcard/ipc/", pid, uuid, authkey);
                 }
 
                 Log.d(TAG, "initTransSDK ret is " + ret);
 
-                if(!isCallEnable){
+                if (!isCallEnable) {
                     isCallEnable = true;
                     runOnUiThread(() -> callBtn.setEnabled(true));
                 }
@@ -224,56 +307,15 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void startConfig() {
-                Log.d(TAG, "startConfig: ");
+                IPCLog.w(TAG, "startConfig: ");
             }
 
             @Override
             public void recConfigInfo() {
-                Log.d(TAG, "recConfigInfo: ");
-            }
-
-            @Override
-            public void onNetConnectFailed(int i, String s) {
-
-            }
-
-            @Override
-            public void onNetPrepareFailed(int i, String s) {
-
+                IPCLog.w(TAG, "recConfigInfo: ");
             }
         };
-
         iNetConfigManager.configNetInfo(netConfigCallback);
-
-        iNetConfigManager.config("QR_OUTPUT", surfaceView.getHolder());
-
-        iNetConfigManager.setPID(pid);
-        iNetConfigManager.setUserId(uuid);
-        iNetConfigManager.setAuthorKey(authkey);
-
-        TuyaNetConfig.setDebug(true);
-
-        // Note: network must be ok before enable mqtt active
-        ConfigProvider.enableMQTT(true);
-
-        IPCServiceManager.getInstance().setResetHandler(isHardward -> {
-
-            if (mHandler != null) {
-                mHandler.postDelayed(() -> {
-                    //restart
-                    Intent mStartActivity = getPackageManager().getLaunchIntentForPackage(getPackageName());
-                    if (mStartActivity != null) {
-                        int mPendingIntentId = 123456;
-                        PendingIntent mPendingIntent = PendingIntent.getActivity(this, mPendingIntentId
-                                , mStartActivity, PendingIntent.FLAG_CANCEL_CURRENT);
-                        AlarmManager mgr = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-                        mgr.set(AlarmManager.RTC, System.currentTimeMillis() + 100, mPendingIntent);
-                        Runtime.getRuntime().exit(0);
-                    }
-
-                }, 1500);
-            }
-        });
     }
 
     private void LoadParamConfig() {
@@ -301,6 +343,7 @@ public class MainActivity extends AppCompatActivity {
 
     //唤醒部分长连接可以参考以下部分
     Socket socket = null;
+
     private void keepHeartToWakeup() {
         IMediaTransManager transManager = IPCServiceManager.getInstance().getService(IPCServiceManager.IPCService.MEDIA_TRANS_SERVICE);
         //获取当前的deviceId
@@ -369,13 +412,13 @@ public class MainActivity extends AppCompatActivity {
                                 if (len.get() > 0) {
                                     int count = 0;
                                     for (int i = 0; i < len.get(); i++) {
-                                        Log.d(TAG, "now wake up data is " + data[i] + " wak is "+ waupStr[i]);
-                                        if(data[i] == waupStr[i]){
-                                            count ++;
+                                        Log.d(TAG, "now wake up data is " + data[i] + " wak is " + waupStr[i]);
+                                        if (data[i] == waupStr[i]) {
+                                            count++;
                                         }
                                     }
 
-                                    if(count == len.get()){
+                                    if (count == len.get()) {
                                         Log.d(TAG, "now wake up sdk !!!!");
                                         break;
                                     }
